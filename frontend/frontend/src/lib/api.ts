@@ -27,7 +27,17 @@ async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> 
     throw new Error(error.message || `HTTP ${response.status}`);
   }
 
-  return response.json();
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
+
+  const contentType = response.headers.get('content-type');
+  if (contentType && contentType.includes('application/json')) {
+    const text = await response.text();
+    return text ? JSON.parse(text) : undefined as T;
+  }
+
+  return undefined as T;
 }
 
 // Special handler for meeting creation that always returns SchedulingResult
@@ -157,4 +167,10 @@ export const verificationApi = {
   getViolations: () => fetchApi<PropertyViolation[]>('/meetings/verification/violations'),
   checkPending: () =>
     fetchApi<PropertyViolation[]>('/meetings/verification/check-pending', { method: 'POST' }),
+  getZ3Enabled: () => fetchApi<{ enabled: boolean }>('/meetings/verification/z3-enabled'),
+  setZ3Enabled: (enabled: boolean) =>
+    fetchApi<{ enabled: boolean }>('/meetings/verification/z3-enabled', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
 };

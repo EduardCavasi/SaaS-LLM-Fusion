@@ -13,23 +13,15 @@ public record ExistingMeeting(
     LocalDateTime endTime,
     Set<Long> participantIds
 ) {
-    /**
-     * Converts start time to epoch seconds for Z3 arithmetic.
-     */
+
     public long getStartEpochSecond() {
         return startTime.toEpochSecond(java.time.ZoneOffset.UTC);
     }
 
-    /**
-     * Converts end time to epoch seconds for Z3 arithmetic.
-     */
     public long getEndEpochSecond() {
         return endTime.toEpochSecond(java.time.ZoneOffset.UTC);
     }
 
-    /**
-     * Checks if this meeting involves a given participant.
-     */
     public boolean involvesParticipant(Long participantId) {
         return participantIds != null && participantIds.contains(participantId);
     }

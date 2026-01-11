@@ -9,15 +9,31 @@ export default function VerificationPage() {
   const [violations, setViolations] = useState<PropertyViolation[]>([]);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [z3Enabled, setZ3Enabled] = useState(true);
+  const [togglingZ3, setTogglingZ3] = useState(false);
+
+  const isDuplicateViolation = (v1: PropertyViolation, v2: PropertyViolation): boolean => {
+    return v1.propertyName === v2.propertyName &&
+           v1.meetingId === v2.meetingId &&
+           v1.description === v2.description &&
+           v1.details === v2.details;
+  };
 
   const fetchData = async () => {
     try {
-      const [statsData, violationsData] = await Promise.all([
+      const [statsData, violationsData, z3Status] = await Promise.all([
         verificationApi.getStats(),
         verificationApi.getViolations(),
+        verificationApi.getZ3Enabled(),
       ]);
       setStats(statsData);
-      setViolations(violationsData);
+      
+      const uniqueViolations = violationsData.filter((v, index, self) =>
+        index === self.findIndex(other => isDuplicateViolation(v, other))
+      );
+      setViolations(uniqueViolations);
+      
+      setZ3Enabled(z3Status.enabled);
     } catch (error) {
       console.error('Failed to fetch verification data:', error);
     } finally {
@@ -36,13 +52,32 @@ export default function VerificationPage() {
     try {
       const newViolations = await verificationApi.checkPending();
       if (newViolations.length > 0) {
-        setViolations([...newViolations, ...violations]);
+        const uniqueNewViolations = newViolations.filter(newV => 
+          !violations.some(existingV => isDuplicateViolation(newV, existingV))
+        );
+        if (uniqueNewViolations.length > 0) {
+          setViolations([...uniqueNewViolations, ...violations]);
+        }
       }
       fetchData();
     } catch (error) {
       console.error('Failed to check pending meetings:', error);
     } finally {
       setChecking(false);
+    }
+  };
+
+  const handleToggleZ3 = async () => {
+    setTogglingZ3(true);
+    try {
+      const newStatus = !z3Enabled;
+      await verificationApi.setZ3Enabled(newStatus);
+      setZ3Enabled(newStatus);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to toggle Z3 solver:', error);
+    } finally {
+      setTogglingZ3(false);
     }
   };
 
@@ -72,13 +107,22 @@ export default function VerificationPage() {
             Monitor LTL properties and constraint violations
           </p>
         </div>
-        <button
-          onClick={handleCheckPending}
-          disabled={checking}
-          className="btn btn-primary"
-        >
-          {checking ? 'Checking...' : '🔍 Check Pending Meetings'}
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={handleToggleZ3}
+            disabled={togglingZ3}
+            className={`btn ${z3Enabled ? 'btn-secondary' : 'btn-primary'}`}
+          >
+            {togglingZ3 ? '...' : z3Enabled ? '🔒 Z3 Enabled' : '🔓 Z3 Disabled'}
+          </button>
+          <button
+            onClick={handleCheckPending}
+            disabled={checking}
+            className="btn btn-primary"
+          >
+            {checking ? 'Checking...' : '🔍 Check Pending Meetings'}
+          </button>
+        </div>
       </div>
 
       {/* LTL Properties Explanation */}
@@ -122,13 +166,13 @@ export default function VerificationPage() {
 
       {/* Stats Overview */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className={`stat-card ${stats?.z3SolverInitialized ? 'border-green-800/30' : 'border-red-800/30'}`}>
+        <div className={`stat-card ${stats?.z3SolverEnabled !== false && stats?.z3SolverInitialized ? 'border-green-800/30' : 'border-red-800/30'}`}>
           <div className="text-[var(--muted-foreground)] text-sm mb-1">Z3 Solver</div>
-          <div className={`text-2xl font-bold ${stats?.z3SolverInitialized ? 'text-green-400' : 'text-red-400'}`}>
-            {stats?.z3SolverInitialized ? 'Online' : 'Offline'}
+          <div className={`text-2xl font-bold ${stats?.z3SolverEnabled !== false && stats?.z3SolverInitialized ? 'text-green-400' : 'text-red-400'}`}>
+            {stats?.z3SolverEnabled === false ? 'Disabled' : stats?.z3SolverInitialized ? 'Online' : 'Offline'}
           </div>
           <div className="text-xs text-[var(--muted-foreground)] mt-2">
-            SMT constraint solving
+            {stats?.z3SolverEnabled === false ? 'User disabled' : 'SMT constraint solving'}
           </div>
         </div>
 

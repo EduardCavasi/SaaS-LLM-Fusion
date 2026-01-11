@@ -57,11 +57,16 @@ export default function ParticipantsPage() {
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this participant?')) return;
+    
+    const previousParticipants = [...participants];
+    setParticipants(participants.filter(p => p.id !== id));
+    
     try {
       await participantApi.delete(id);
-      fetchParticipants();
+      await fetchParticipants();
     } catch (error) {
       console.error('Failed to delete participant:', error);
+      setParticipants(previousParticipants);
     }
   };
 

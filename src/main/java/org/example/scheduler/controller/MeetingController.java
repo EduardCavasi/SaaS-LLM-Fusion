@@ -179,5 +179,24 @@ public class MeetingController {
         List<PropertyViolation> violations = meetingService.checkPendingMeetingsCompliance();
         return ResponseEntity.ok(violations);
     }
+
+    @GetMapping("/verification/z3-enabled")
+    public ResponseEntity<Map<String, Boolean>> getZ3SolverStatus() {
+        Map<String, Boolean> status = new java.util.HashMap<>();
+        status.put("enabled", meetingService.isZ3SolverEnabled());
+        return ResponseEntity.ok(status);
+    }
+
+    @PostMapping("/verification/z3-enabled")
+    public ResponseEntity<Map<String, Boolean>> setZ3SolverEnabled(@RequestBody Map<String, Boolean> request) {
+        Boolean enabled = request.get("enabled");
+        if (enabled == null) {
+            return ResponseEntity.badRequest().build();
+        }
+        meetingService.setZ3SolverEnabled(enabled);
+        Map<String, Boolean> status = new java.util.HashMap<>();
+        status.put("enabled", meetingService.isZ3SolverEnabled());
+        return ResponseEntity.ok(status);
+    }
 }
 

@@ -16,7 +16,6 @@ import java.util.List;
  * Aspect for automatic runtime verification of meeting operations.
  * 
  * Intercepts service method calls to automatically invoke the MeetingMonitor.
- * This provides transparent runtime verification without modifying service code.
  */
 @Aspect
 @Component
@@ -58,8 +57,6 @@ public class MeetingMonitorAspect {
         if (result instanceof SchedulingResultDTO dto && dto.isSuccess() && dto.getMeeting() != null) {
             log.debug("RV Aspect: Intercepted successful meeting creation for ID {}", 
                 dto.getMeeting().getId());
-            // Note: The actual monitoring is done in the service layer
-            // This aspect logs and can add additional checks
         }
     }
 
@@ -69,7 +66,6 @@ public class MeetingMonitorAspect {
     @Before("meetingDeletion() && args(meetingId)")
     public void beforeMeetingDeletion(JoinPoint joinPoint, Long meetingId) {
         log.debug("RV Aspect: Intercepted meeting deletion request for ID {}", meetingId);
-        // Pre-deletion verification happens in the service
     }
 
     /**

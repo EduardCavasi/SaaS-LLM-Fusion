@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * Initializes sample data for development and testing.
+ * Initializes mock data for testing.
  */
 @Component
 @Profile("!test")
