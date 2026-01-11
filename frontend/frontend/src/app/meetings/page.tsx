@@ -138,11 +138,16 @@ export default function MeetingsPage() {
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this meeting?')) return;
+    
+    const previousMeetings = [...meetings];
+    setMeetings(meetings.filter(meeting => meeting.id !== id));
+    
     try {
       await meetingApi.delete(id);
-      fetchData();
+      await fetchData();
     } catch (error) {
       console.error('Failed to delete meeting:', error);
+      setMeetings(previousMeetings);
     }
   };
 

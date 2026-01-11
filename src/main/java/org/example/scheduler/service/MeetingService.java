@@ -75,30 +75,33 @@ public class MeetingService {
         // Fetch participants
         Set<Participant> participants = participantService.getParticipantEntitiesByIds(meetingDTO.getParticipantIds());
         
-        // Build constraint for Z3 verification
-        SchedulingConstraint newConstraint = new SchedulingConstraint(
-            null, // New meeting, no ID yet
-            room.getId(),
-            room.getCapacity(),
-            meetingDTO.getStartTime(),
-            meetingDTO.getEndTime(),
-            meetingDTO.getParticipantIds()
-        );
+        ConstraintResult result;
         
-        // Fetch existing meetings for constraint checking
-        List<ExistingMeeting> existingMeetings = getExistingMeetingsForConstraints();
-        
-        // Z3 Constraint Verification
-        ConstraintResult result = constraintSolver.checkSchedulingFeasibility(newConstraint, existingMeetings);
-        
-        if (!result.satisfiable()) {
-            log.warn("Z3 Solver: Meeting scheduling is UNSATISFIABLE - {} violations", 
-                result.violations().size());
-            return SchedulingResultDTO.failure(
-                result.violations(),
-                "Scheduling constraints cannot be satisfied",
-                result.solvingTimeMs()
+        if (constraintSolver.isEnabled()) {
+            SchedulingConstraint newConstraint = new SchedulingConstraint(
+                null,
+                room.getId(),
+                room.getCapacity(),
+                meetingDTO.getStartTime(),
+                meetingDTO.getEndTime(),
+                meetingDTO.getParticipantIds()
             );
+            
+            List<ExistingMeeting> existingMeetings = getExistingMeetingsForConstraints();
+            
+            result = constraintSolver.checkSchedulingFeasibility(newConstraint, existingMeetings);
+            
+            if (!result.satisfiable()) {
+                log.warn("Z3 Solver: Meeting scheduling is UNSATISFIABLE - {} violations", 
+                    result.violations().size());
+                return SchedulingResultDTO.failure(
+                    result.violations(),
+                    "Scheduling constraints cannot be satisfied",
+                    result.solvingTimeMs()
+                );
+            }
+        } else {
+            result = ConstraintResult.success(0);
         }
         
         // Create the meeting
@@ -129,6 +132,8 @@ public class MeetingService {
             result.solvingTimeMs()
         );
         schedulingResult.setRuntimeWarnings(warnings);
+        
+        meetingMonitor.checkPendingMeetings();
         
         log.info("Created meeting with ID: {} (Z3 solving took {}ms)", 
             meeting.getId(), result.solvingTimeMs());
@@ -220,30 +225,33 @@ public class MeetingService {
         // Fetch room
         Room room = roomService.getRoomEntityById(newRoomId);
         
-        // Build constraint for Z3 verification
-        SchedulingConstraint updateConstraint = new SchedulingConstraint(
-            id, // Include meeting ID to exclude self from conflict check
-            room.getId(),
-            room.getCapacity(),
-            newStartTime,
-            newEndTime,
-            newParticipantIds
-        );
+        ConstraintResult result;
         
-        // Fetch existing meetings excluding this one
-        List<ExistingMeeting> existingMeetings = getExistingMeetingsForConstraints();
-        
-        // Z3 Constraint Verification
-        ConstraintResult result = constraintSolver.checkSchedulingFeasibility(updateConstraint, existingMeetings);
-        
-        if (!result.satisfiable()) {
-            log.warn("Z3 Solver: Meeting update is UNSATISFIABLE - {} violations", 
-                result.violations().size());
-            return SchedulingResultDTO.failure(
-                result.violations(),
-                "Updated scheduling constraints cannot be satisfied",
-                result.solvingTimeMs()
+        if (constraintSolver.isEnabled()) {
+            SchedulingConstraint updateConstraint = new SchedulingConstraint(
+                id,
+                room.getId(),
+                room.getCapacity(),
+                newStartTime,
+                newEndTime,
+                newParticipantIds
             );
+            
+            List<ExistingMeeting> existingMeetings = getExistingMeetingsForConstraints();
+            
+            result = constraintSolver.checkSchedulingFeasibility(updateConstraint, existingMeetings);
+            
+            if (!result.satisfiable()) {
+                log.warn("Z3 Solver: Meeting update is UNSATISFIABLE - {} violations", 
+                    result.violations().size());
+                return SchedulingResultDTO.failure(
+                    result.violations(),
+                    "Updated scheduling constraints cannot be satisfied",
+                    result.solvingTimeMs()
+                );
+            }
+        } else {
+            result = ConstraintResult.success(0);
         }
         
         // Apply updates
@@ -263,6 +271,8 @@ public class MeetingService {
         }
         
         meeting = meetingRepository.save(meeting);
+        
+        meetingMonitor.checkPendingMeetings();
         
         MeetingDTO resultDTO = toDTO(meeting);
         
@@ -293,12 +303,13 @@ public class MeetingService {
         meeting.setStatus(newStatus);
         meeting = meetingRepository.save(meeting);
         
-        // Runtime Verification: Track status change
         switch (newStatus) {
             case CONFIRMED -> meetingMonitor.onMeetingConfirm(id);
             case REJECTED -> meetingMonitor.onMeetingReject(id);
             case CANCELLED -> meetingMonitor.onMeetingCancel(id, oldStatus);
         }
+        
+        meetingMonitor.checkPendingMeetings();
         
         log.info("Updated meeting {} status from {} to {}", id, oldStatus, newStatus);
         
@@ -317,7 +328,6 @@ public class MeetingService {
         
         MeetingStatus previousStatus = meeting.getStatus();
         
-        // Runtime Verification: Check delete safety
         List<PropertyViolation> violations = meetingMonitor.onMeetingDelete(id, previousStatus);
         
         if (!violations.isEmpty()) {
@@ -333,6 +343,10 @@ public class MeetingService {
         }
         
         meetingRepository.delete(meeting);
+        
+        meetingMonitor.removeViolationsForMeeting(id);
+        meetingMonitor.checkPendingMeetings();
+        
         log.info("Deleted meeting ID: {}", id);
     }
 
@@ -366,8 +380,17 @@ public class MeetingService {
     public Map<String, Object> getVerificationStatistics() {
         Map<String, Object> stats = new HashMap<>();
         stats.put("z3SolverInitialized", constraintSolver.isInitialized());
+        stats.put("z3SolverEnabled", constraintSolver.isEnabled());
         stats.putAll(meetingMonitor.getStatistics());
         return stats;
+    }
+
+    public boolean isZ3SolverEnabled() {
+        return constraintSolver.isEnabled();
+    }
+
+    public void setZ3SolverEnabled(boolean enabled) {
+        constraintSolver.setEnabled(enabled);
     }
 
     /**

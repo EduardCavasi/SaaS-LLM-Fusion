@@ -61,11 +61,16 @@ export default function RoomsPage() {
 
   const handleDelete = async (id: number) => {
     if (!confirm('Are you sure you want to delete this room?')) return;
+    
+    const previousRooms = [...rooms];
+    setRooms(rooms.filter(room => room.id !== id));
+    
     try {
       await roomApi.delete(id);
-      fetchRooms();
+      await fetchRooms();
     } catch (error) {
       console.error('Failed to delete room:', error);
+      setRooms(previousRooms);
     }
   };
 

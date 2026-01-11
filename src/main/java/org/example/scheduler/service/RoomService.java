@@ -45,8 +45,8 @@ public class RoomService {
         
         room = roomRepository.save(room);
         
-        // Register room with runtime monitor
         meetingMonitor.registerRoom(room.getId(), room.getCapacity());
+        meetingMonitor.checkPendingMeetings();
         
         log.info("Created room with ID: {}", room.getId());
         return toDTO(room);
@@ -154,6 +154,7 @@ public class RoomService {
         }
         
         roomRepository.deleteById(id);
+        meetingMonitor.checkPendingMeetings();
         log.info("Deleted room ID: {}", id);
     }
 

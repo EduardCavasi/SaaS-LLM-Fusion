@@ -11,9 +11,9 @@ import java.util.*;
 /**
  * Z3 SMT Solver for meeting scheduling constraint verification.
  * 
- * This component uses Z3 to verify scheduling feasibility by checking:
+ * Checks:
  * 1. No overlapping meetings in the same room
- * 2. All required participants must be free (no double-booking)
+ * 2. All participants must be free
  * 3. Room capacity must not be exceeded
  * 
  * The solver encodes these constraints as SMT formulas and checks satisfiability.
@@ -24,6 +24,7 @@ public class Z3ConstraintSolver {
 
     private Context ctx;
     private boolean initialized = false;
+    private volatile boolean enabled = true;
 
     @PostConstruct
     public void initialize() {
@@ -55,14 +56,14 @@ public class Z3ConstraintSolver {
 
     /**
      * Checks if a new meeting can be scheduled without violating constraints.
-     *
-     * @param newMeeting The new meeting constraint to check
-     * @param existingMeetings List of existing meetings in the system
-     * @return ConstraintResult indicating whether scheduling is feasible
      */
     public ConstraintResult checkSchedulingFeasibility(
             SchedulingConstraint newMeeting,
             List<ExistingMeeting> existingMeetings) {
+        
+        if (!enabled) {
+            return ConstraintResult.success(0);
+        }
         
         if (!initialized) {
             return ConstraintResult.error("Z3 Solver not initialized", 0);
@@ -74,15 +75,11 @@ public class Z3ConstraintSolver {
         try {
             Solver solver = ctx.mkSolver();
 
-            // === Pre-validation checks ===
-            
-            // Check valid time range
             if (!newMeeting.hasValidTimeRange()) {
                 violations.add("Invalid time range: start time must be before end time");
                 return ConstraintResult.failure(violations, System.currentTimeMillis() - startTime);
             }
 
-            // Check room capacity
             if (!newMeeting.fitsCapacity()) {
                 violations.add(String.format(
                     "Room capacity exceeded: %d participants requested, but room capacity is %d",
@@ -92,16 +89,11 @@ public class Z3ConstraintSolver {
                 return ConstraintResult.failure(violations, System.currentTimeMillis() - startTime);
             }
 
-            // === Z3 Constraint Encoding ===
-
-            // Create integer constants for the new meeting
             IntExpr newStart = ctx.mkInt(newMeeting.getStartEpochSecond());
             IntExpr newEnd = ctx.mkInt(newMeeting.getEndEpochSecond());
             IntExpr newRoom = ctx.mkInt(newMeeting.roomId());
 
-            // Check for room conflicts with existing meetings
             for (ExistingMeeting existing : existingMeetings) {
-                // Skip if checking against itself (for updates)
                 if (newMeeting.meetingId() != null && 
                     newMeeting.meetingId().equals(existing.meetingId())) {
                     continue;
@@ -112,7 +104,6 @@ public class Z3ConstraintSolver {
                 IntExpr existingRoom = ctx.mkInt(existing.roomId());
 
                 // Constraint: No overlapping meetings in the same room
-                // Overlap occurs when: room1 == room2 AND start1 < end2 AND start2 < end1
                 BoolExpr sameRoom = ctx.mkEq(newRoom, existingRoom);
                 BoolExpr overlaps = ctx.mkAnd(
                     ctx.mkLt(newStart, existingEnd),
@@ -122,8 +113,6 @@ public class Z3ConstraintSolver {
                 // If same room and overlaps, this is a conflict
                 BoolExpr roomConflict = ctx.mkAnd(sameRoom, overlaps);
                 
-                // We assert that there should be NO room conflict
-                // If the solver finds this unsatisfiable, there's a conflict
                 solver.push();
                 solver.add(ctx.mkNot(roomConflict));
                 
@@ -139,21 +128,17 @@ public class Z3ConstraintSolver {
                 solver.pop();
             }
 
-            // Check for participant conflicts
             for (Long participantId : newMeeting.participantIds()) {
                 for (ExistingMeeting existing : existingMeetings) {
-                    // Skip if checking against itself
                     if (newMeeting.meetingId() != null && 
                         newMeeting.meetingId().equals(existing.meetingId())) {
                         continue;
                     }
 
-                    // Check if participant is in the existing meeting
                     if (existing.involvesParticipant(participantId)) {
                         IntExpr existingStart = ctx.mkInt(existing.getStartEpochSecond());
                         IntExpr existingEnd = ctx.mkInt(existing.getEndEpochSecond());
 
-                        // Check for time overlap
                         BoolExpr participantOverlap = ctx.mkAnd(
                             ctx.mkLt(newStart, existingEnd),
                             ctx.mkLt(existingStart, newEnd)
@@ -196,13 +181,6 @@ public class Z3ConstraintSolver {
 
     /**
      * Finds available time slots for a meeting in a given room.
-     *
-     * @param roomId The room to check
-     * @param duration Duration in minutes
-     * @param searchStart Start of search window
-     * @param searchEnd End of search window
-     * @param existingMeetings Existing meetings to avoid
-     * @return List of available time slot start times
      */
     public List<Long> findAvailableSlots(
             Long roomId,
@@ -213,9 +191,8 @@ public class Z3ConstraintSolver {
 
         List<Long> availableSlots = new ArrayList<>();
         long durationSeconds = durationMinutes * 60L;
-        long slotIncrement = 15 * 60L; // Check every 15 minutes
+        long slotIncrement = 15 * 60L;
 
-        // Filter meetings for this room
         List<ExistingMeeting> roomMeetings = existingMeetings.stream()
                 .filter(m -> m.roomId().equals(roomId))
                 .sorted(Comparator.comparing(ExistingMeeting::getStartEpochSecond))
@@ -226,10 +203,8 @@ public class Z3ConstraintSolver {
             boolean isAvailable = true;
 
             for (ExistingMeeting meeting : roomMeetings) {
-                // Check for overlap
                 if (slotStart < meeting.getEndEpochSecond() && meeting.getStartEpochSecond() < slotEnd) {
                     isAvailable = false;
-                    // Skip to end of this meeting
                     slotStart = meeting.getEndEpochSecond() - slotIncrement;
                     break;
                 }
@@ -245,10 +220,6 @@ public class Z3ConstraintSolver {
 
     /**
      * Verifies a batch of scheduling constraints atomically.
-     *
-     * @param meetings List of meeting constraints to verify together
-     * @param existingMeetings Existing meetings in the system
-     * @return ConstraintResult for the batch operation
      */
     public ConstraintResult verifyBatchScheduling(
             List<SchedulingConstraint> meetings,
@@ -264,7 +235,6 @@ public class Z3ConstraintSolver {
         try {
             Solver solver = ctx.mkSolver();
 
-            // Check each new meeting against existing meetings
             for (SchedulingConstraint newMeeting : meetings) {
                 ConstraintResult result = checkSchedulingFeasibility(newMeeting, existingMeetings);
                 if (!result.satisfiable()) {
@@ -272,13 +242,11 @@ public class Z3ConstraintSolver {
                 }
             }
 
-            // Check new meetings against each other
             for (int i = 0; i < meetings.size(); i++) {
                 for (int j = i + 1; j < meetings.size(); j++) {
                     SchedulingConstraint m1 = meetings.get(i);
                     SchedulingConstraint m2 = meetings.get(j);
 
-                    // Check room conflict between new meetings
                     if (m1.roomId().equals(m2.roomId())) {
                         IntExpr start1 = ctx.mkInt(m1.getStartEpochSecond());
                         IntExpr end1 = ctx.mkInt(m1.getEndEpochSecond());
@@ -302,7 +270,6 @@ public class Z3ConstraintSolver {
                         solver.pop();
                     }
 
-                    // Check participant conflicts between new meetings
                     Set<Long> commonParticipants = new HashSet<>(m1.participantIds());
                     commonParticipants.retainAll(m2.participantIds());
 
@@ -348,6 +315,15 @@ public class Z3ConstraintSolver {
 
     public boolean isInitialized() {
         return initialized;
+    }
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+        log.info("Z3 Constraint Solver {} by user request", enabled ? "enabled" : "disabled");
     }
 }
 

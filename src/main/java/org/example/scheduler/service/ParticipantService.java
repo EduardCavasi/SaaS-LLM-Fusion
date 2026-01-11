@@ -6,6 +6,7 @@ import org.example.scheduler.dto.ParticipantDTO;
 import org.example.scheduler.exception.ResourceNotFoundException;
 import org.example.scheduler.model.Participant;
 import org.example.scheduler.repository.ParticipantRepository;
+import org.example.scheduler.verification.runtime.MeetingMonitor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +21,7 @@ import java.util.stream.Collectors;
 public class ParticipantService {
 
     private final ParticipantRepository participantRepository;
+    private final MeetingMonitor meetingMonitor;
 
     /**
      * Creates a new participant.
@@ -40,6 +42,8 @@ public class ParticipantService {
         
         participant = participantRepository.save(participant);
         log.info("Created participant with ID: {}", participant.getId());
+        
+        meetingMonitor.checkPendingMeetings();
         
         return toDTO(participant);
     }
@@ -148,6 +152,7 @@ public class ParticipantService {
         }
         
         participantRepository.deleteById(id);
+        meetingMonitor.checkPendingMeetings();
         log.info("Deleted participant ID: {}", id);
     }
 

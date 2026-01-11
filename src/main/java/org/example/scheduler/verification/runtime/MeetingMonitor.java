@@ -12,40 +12,34 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Runtime Verification Monitor for meeting scheduling.
  * 
- * Monitors the following LTL-like properties:
+ * Monitors:
  * 
- * Property 1 - Create Flow: G (create(id) → F (confirm(id) ∨ reject(id)))
+ * 1 - Create Flow: G (create(id) → F (confirm(id) ∨ reject(id)))
  *   Every created meeting must eventually be confirmed or rejected.
  * 
- * Property 2 - Delete Safety: G (delete(id) → previouslyCreated(id))
+ * 2 - Delete Safety: G (delete(id) → previouslyCreated(id))
  *   Cannot delete a meeting that doesn't exist.
  * 
- * Property 3 - No Overlaps: G ¬overlaps(meetingA, meetingB)
+ * 3 - No Overlaps: G ¬overlaps(meetingA, meetingB)
  *   No two meetings can overlap in the same room.
  * 
- * Property 4 - Capacity: G (assign(room, attendees) → attendees ≤ capacity(room))
+ * 4 - Capacity: G (assign(room, attendees) → attendees ≤ capacity(room))
  *   Room capacity must not be exceeded.
  */
 @Component
 @Slf4j
 public class MeetingMonitor {
 
-    // Track pending meetings awaiting confirmation/rejection
     private final Map<Long, MeetingEvent> pendingMeetings = new ConcurrentHashMap<>();
     
-    // Track all created meetings for delete safety check
     private final Set<Long> createdMeetings = ConcurrentHashMap.newKeySet();
     
-    // Track active meetings per room for overlap detection
     private final Map<Long, List<ActiveMeetingSlot>> roomSchedule = new ConcurrentHashMap<>();
     
-    // Event history for auditing
     private final List<MeetingEvent> eventHistory = Collections.synchronizedList(new ArrayList<>());
     
-    // Detected violations
     private final List<PropertyViolation> violations = Collections.synchronizedList(new ArrayList<>());
 
-    // Room capacities for capacity checking
     private final Map<Long, Integer> roomCapacities = new ConcurrentHashMap<>();
 
     /**
@@ -57,9 +51,6 @@ public class MeetingMonitor {
         LocalDateTime endTime
     ) {}
 
-    /**
-     * Registers a room's capacity for monitoring.
-     */
     public void registerRoom(Long roomId, int capacity) {
         roomCapacities.put(roomId, capacity);
         roomSchedule.putIfAbsent(roomId, Collections.synchronizedList(new ArrayList<>()));
@@ -68,7 +59,7 @@ public class MeetingMonitor {
 
     /**
      * Called when a meeting is created.
-     * Property 1: Starts tracking that this meeting must eventually be confirmed/rejected.
+     * 1: Starts tracking that this meeting must eventually be confirmed/rejected.
      */
     public List<PropertyViolation> onMeetingCreate(Meeting meeting) {
         List<PropertyViolation> newViolations = new ArrayList<>();
@@ -85,7 +76,6 @@ public class MeetingMonitor {
         createdMeetings.add(meeting.getId());
         pendingMeetings.put(meeting.getId(), event);
         
-        // Property 4: Check capacity constraint
         Integer roomCapacity = roomCapacities.get(meeting.getRoom().getId());
         if (roomCapacity != null && meeting.getParticipants().size() > roomCapacity) {
             PropertyViolation violation = PropertyViolation.error(
@@ -95,14 +85,19 @@ public class MeetingMonitor {
                 String.format("Meeting has %d participants but room capacity is %d",
                     meeting.getParticipants().size(), roomCapacity)
             );
-            newViolations.add(violation);
-            violations.add(violation);
+            if (!isDuplicateViolation(violation)) {
+                newViolations.add(violation);
+                violations.add(violation);
+            }
         }
         
-        // Property 3: Check for overlaps
         List<PropertyViolation> overlapViolations = checkOverlaps(meeting);
-        newViolations.addAll(overlapViolations);
-        violations.addAll(overlapViolations);
+        for (PropertyViolation violation : overlapViolations) {
+            if (!isDuplicateViolation(violation)) {
+                newViolations.add(violation);
+                violations.add(violation);
+            }
+        }
         
         // Add to room schedule if no violations
         if (overlapViolations.isEmpty()) {
@@ -119,7 +114,7 @@ public class MeetingMonitor {
 
     /**
      * Called when a meeting is confirmed.
-     * Property 1: Satisfies the create → confirm requirement.
+     * 1: Satisfies the create → confirm requirement.
      */
     public List<PropertyViolation> onMeetingConfirm(Long meetingId) {
         List<PropertyViolation> newViolations = new ArrayList<>();
@@ -135,9 +130,16 @@ public class MeetingMonitor {
                 meetingId,
                 "Meeting may have been created before monitor was active"
             );
-            newViolations.add(violation);
-            violations.add(violation);
+            if (!isDuplicateViolation(violation)) {
+                newViolations.add(violation);
+                violations.add(violation);
+            }
         }
+        
+        violations.removeIf(v -> 
+            "UNRESOLVED_MEETING".equals(v.propertyName()) && 
+            meetingId.equals(v.meetingId())
+        );
         
         log.info("RV Monitor: CONFIRM event for meeting {}", meetingId);
         return newViolations;
@@ -145,7 +147,7 @@ public class MeetingMonitor {
 
     /**
      * Called when a meeting is rejected.
-     * Property 1: Satisfies the create → reject requirement.
+     * 1: Satisfies the create → reject requirement.
      */
     public List<PropertyViolation> onMeetingReject(Long meetingId) {
         List<PropertyViolation> newViolations = new ArrayList<>();
@@ -155,7 +157,11 @@ public class MeetingMonitor {
         
         pendingMeetings.remove(meetingId);
         
-        // Remove from room schedule if present
+        violations.removeIf(v -> 
+            "UNRESOLVED_MEETING".equals(v.propertyName()) && 
+            meetingId.equals(v.meetingId())
+        );
+        
         for (List<ActiveMeetingSlot> slots : roomSchedule.values()) {
             slots.removeIf(slot -> slot.meetingId().equals(meetingId));
         }
@@ -174,7 +180,6 @@ public class MeetingMonitor {
         MeetingEvent event = MeetingEvent.delete(meetingId, previousStatus);
         eventHistory.add(event);
         
-        // Property 2: Check delete safety
         if (!createdMeetings.contains(meetingId)) {
             PropertyViolation violation = PropertyViolation.error(
                 "DELETE_NONEXISTENT",
@@ -182,8 +187,10 @@ public class MeetingMonitor {
                 meetingId,
                 "Property G(delete(id) → previouslyCreated(id)) violated"
             );
-            newViolations.add(violation);
-            violations.add(violation);
+            if (!isDuplicateViolation(violation)) {
+                newViolations.add(violation);
+                violations.add(violation);
+            }
         }
         
         createdMeetings.remove(meetingId);
@@ -231,7 +238,6 @@ public class MeetingMonitor {
         
         if (slots != null) {
             for (ActiveMeetingSlot existing : slots) {
-                // Skip self-comparison
                 if (existing.meetingId().equals(newMeeting.getId())) {
                     continue;
                 }
@@ -257,7 +263,6 @@ public class MeetingMonitor {
 
     /**
      * Property 1 monitoring: Check for meetings that haven't been confirmed/rejected.
-     * Should be called periodically or at system checkpoints.
      */
     public List<PropertyViolation> checkPendingMeetings() {
         List<PropertyViolation> newViolations = new ArrayList<>();
@@ -266,7 +271,6 @@ public class MeetingMonitor {
         for (Map.Entry<Long, MeetingEvent> entry : pendingMeetings.entrySet()) {
             MeetingEvent event = entry.getValue();
             
-            // If meeting start time has passed and still pending, this is a violation
             if (event.startTime() != null && event.startTime().isBefore(now)) {
                 PropertyViolation violation = PropertyViolation.error(
                     "UNRESOLVED_MEETING",
@@ -276,8 +280,10 @@ public class MeetingMonitor {
                         "Meeting created at %s, start time was %s",
                         event.eventTimestamp(), event.startTime())
                 );
-                newViolations.add(violation);
-                violations.add(violation);
+                if (!isDuplicateViolation(violation)) {
+                    newViolations.add(violation);
+                    violations.add(violation);
+                }
             }
         }
         
@@ -315,7 +321,7 @@ public class MeetingMonitor {
     }
 
     /**
-     * Clears all monitoring state (for testing).
+     * Clears all monitoring state.
      */
     public void reset() {
         pendingMeetings.clear();
@@ -326,9 +332,20 @@ public class MeetingMonitor {
         log.info("RV Monitor: State reset");
     }
 
-    /**
-     * Gets monitoring statistics.
-     */
+    private boolean isDuplicateViolation(PropertyViolation violation) {
+        return violations.stream().anyMatch(existing ->
+            existing.propertyName().equals(violation.propertyName()) &&
+            Objects.equals(existing.meetingId(), violation.meetingId()) &&
+            existing.description().equals(violation.description()) &&
+            existing.details().equals(violation.details())
+        );
+    }
+
+    public void removeViolationsForMeeting(Long meetingId) {
+        violations.removeIf(v -> meetingId.equals(v.meetingId()));
+        log.info("RV Monitor: Removed violations for meeting {}", meetingId);
+    }
+
     public Map<String, Object> getStatistics() {
         Map<String, Object> stats = new HashMap<>();
         stats.put("totalEvents", eventHistory.size());

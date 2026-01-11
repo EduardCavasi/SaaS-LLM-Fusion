@@ -65,6 +65,7 @@ export interface PropertyViolation {
 
 export interface VerificationStats {
   z3SolverInitialized: boolean;
+  z3SolverEnabled?: boolean;
   totalEvents: number;
   pendingMeetings: number;
   trackedMeetings: number;
