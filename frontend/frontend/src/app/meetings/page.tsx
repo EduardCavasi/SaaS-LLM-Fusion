@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { meetingApi, roomApi, participantApi } from '@/lib/api';
-import { Meeting, Room, Participant, SchedulingResult, CreateMeetingRequest } from '@/types';
+import { Meeting, Room, Participant, SchedulingResult, CreateMeetingRequest, AvailableSlotsRequest, AvailableSlotsResponse } from '@/types';
 
 export default function MeetingsPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -10,9 +10,16 @@ export default function MeetingsPage() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showSlotsModal, setShowSlotsModal] = useState(false);
+  const [showBatchModal, setShowBatchModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [schedulingResult, setSchedulingResult] = useState<SchedulingResult | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [availableSlots, setAvailableSlots] = useState<AvailableSlotsResponse | null>(null);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [batchMeetings, setBatchMeetings] = useState<CreateMeetingRequest[]>([]);
+  const [batchResult, setBatchResult] = useState<SchedulingResult | null>(null);
+  const [loadingBatch, setLoadingBatch] = useState(false);
   const [formData, setFormData] = useState<CreateMeetingRequest>({
     title: '',
     description: '',
@@ -179,9 +186,23 @@ export default function MeetingsPage() {
             Schedule and manage meetings with Z3 verification
           </p>
         </div>
-        <button onClick={() => { resetForm(); setShowModal(true); }} className="btn btn-primary">
-          + New Meeting
-        </button>
+        <div className="flex gap-2">
+          <button 
+            onClick={() => { setShowSlotsModal(true); setAvailableSlots(null); }} 
+            className="btn btn-secondary"
+          >
+            🔍 Find Available Slots
+          </button>
+          <button 
+            onClick={() => { setShowBatchModal(true); setBatchMeetings([]); setBatchResult(null); }} 
+            className="btn btn-secondary"
+          >
+            📦 Batch Verify
+          </button>
+          <button onClick={() => { resetForm(); setShowModal(true); }} className="btn btn-primary">
+            + New Meeting
+          </button>
+        </div>
       </div>
 
       {/* Meetings Table */}
@@ -535,6 +556,420 @@ export default function MeetingsPage() {
           </div>
         </div>
       )}
+
+      {/* Find Available Slots Modal */}
+      {showSlotsModal && (
+        <div className="modal-overlay" onClick={() => setShowSlotsModal(false)}>
+          <div className="modal-content max-w-3xl" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-xl font-bold mb-4">🔍 Find Available Slots</h2>
+            
+            <AvailableSlotsForm
+              rooms={rooms}
+              onFind={async (request) => {
+                setLoadingSlots(true);
+                try {
+                  const formatDateTime = (dateTimeLocal: string) => {
+                    if (dateTimeLocal.includes('Z') || dateTimeLocal.includes('+')) {
+                      return dateTimeLocal;
+                    }
+                    return `${dateTimeLocal}:00`;
+                  };
+                  
+                  const response = await meetingApi.findAvailableSlots({
+                    ...request,
+                    searchStart: formatDateTime(request.searchStart),
+                    searchEnd: formatDateTime(request.searchEnd),
+                  });
+                  setAvailableSlots(response);
+                } catch (error) {
+                  console.error('Failed to find available slots:', error);
+                  alert(error instanceof Error ? error.message : 'Failed to find available slots');
+                } finally {
+                  setLoadingSlots(false);
+                }
+              }}
+              loading={loadingSlots}
+            />
+
+            {availableSlots && (
+              <div className="mt-6 p-4 bg-[var(--secondary)] rounded-lg">
+                <h3 className="font-semibold mb-3">
+                  Found {availableSlots.totalSlots} available slot{availableSlots.totalSlots !== 1 ? 's' : ''}
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-60 overflow-y-auto">
+                  {availableSlots.availableSlots.map((slot, idx) => (
+                    <div
+                      key={idx}
+                      className="p-2 bg-[var(--muted)] rounded text-sm cursor-pointer hover:bg-[var(--primary)] hover:text-white transition-colors"
+                      onClick={() => {
+                        const slotDate = new Date(slot);
+                        const endDate = new Date(slotDate.getTime() + availableSlots.durationMinutes * 60000);
+                        setFormData({
+                          ...formData,
+                          roomId: availableSlots.roomId,
+                          startTime: slotDate.toISOString().slice(0, 16),
+                          endTime: endDate.toISOString().slice(0, 16),
+                        });
+                        setShowSlotsModal(false);
+                        setShowModal(true);
+                      }}
+                    >
+                      {new Date(slot).toLocaleString()}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowSlotsModal(false)}
+                className="btn btn-secondary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Verify Modal */}
+      {showBatchModal && (
+        <div className="modal-overlay" onClick={() => setShowBatchModal(false)}>
+          <div className="modal-content max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-xl font-bold mb-4">📦 Batch Verify Meetings</h2>
+            
+            <BatchVerifyForm
+              rooms={rooms}
+              participants={participants}
+              meetings={batchMeetings}
+              onMeetingsChange={setBatchMeetings}
+              onVerify={async () => {
+                setLoadingBatch(true);
+                setBatchResult(null);
+                try {
+                  const formatDateTime = (dateTimeLocal: string) => {
+                    if (dateTimeLocal.includes('Z') || dateTimeLocal.includes('+')) {
+                      return dateTimeLocal;
+                    }
+                    return `${dateTimeLocal}:00`;
+                  };
+                  
+                  const formattedMeetings = batchMeetings.map(m => ({
+                    ...m,
+                    startTime: formatDateTime(m.startTime),
+                    endTime: formatDateTime(m.endTime),
+                  }));
+                  
+                  const result = await meetingApi.verifyBatchScheduling(formattedMeetings);
+                  setBatchResult(result);
+                } catch (error) {
+                  console.error('Failed to verify batch:', error);
+                  alert(error instanceof Error ? error.message : 'Failed to verify batch scheduling');
+                } finally {
+                  setLoadingBatch(false);
+                }
+              }}
+              loading={loadingBatch}
+            />
+
+            {batchResult && (
+              <div className={`mt-6 p-4 rounded-lg border-2 ${
+                batchResult.success 
+                  ? 'border-green-600/50 bg-green-900/10' 
+                  : 'border-red-600/50 bg-red-900/10'
+              }`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-2xl ${batchResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                    {batchResult.success ? '✓' : '✗'}
+                  </span>
+                  <span className="font-bold">{batchResult.explanation}</span>
+                </div>
+                {batchResult.constraintViolations && batchResult.constraintViolations.length > 0 && (
+                  <div className="mt-3">
+                    <div className="font-semibold text-red-400 mb-2">Violations:</div>
+                    <ul className="list-disc list-inside space-y-1 text-sm">
+                      {batchResult.constraintViolations.map((v, i) => (
+                        <li key={i} className="text-red-200">{v}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="mt-2 text-xs text-[var(--muted-foreground)]">
+                  Verification took {batchResult.solvingTimeMs}ms
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowBatchModal(false)}
+                className="btn btn-secondary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AvailableSlotsForm({ rooms, onFind, loading }: {
+  rooms: Room[];
+  onFind: (request: AvailableSlotsRequest) => void;
+  loading: boolean;
+}) {
+  const [formData, setFormData] = useState({
+    roomId: 0,
+    durationMinutes: 60,
+    searchStart: '',
+    searchEnd: '',
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (formData.roomId === 0) {
+      alert('Please select a room');
+      return;
+    }
+    onFind(formData as AvailableSlotsRequest);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium mb-1">Room *</label>
+        <select
+          className="input select"
+          value={formData.roomId}
+          onChange={(e) => setFormData({ ...formData, roomId: Number(e.target.value) })}
+          required
+          disabled={loading}
+        >
+          <option value={0}>Select a room...</option>
+          {rooms.map((room) => (
+            <option key={room.id} value={room.id}>
+              {room.name} (Capacity: {room.capacity})
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium mb-1">Duration (minutes) *</label>
+        <input
+          type="number"
+          className="input"
+          min={15}
+          step={15}
+          value={formData.durationMinutes}
+          onChange={(e) => setFormData({ ...formData, durationMinutes: Number(e.target.value) })}
+          required
+          disabled={loading}
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Search Start Time *</label>
+          <input
+            type="datetime-local"
+            className="input"
+            value={formData.searchStart}
+            onChange={(e) => setFormData({ ...formData, searchStart: e.target.value })}
+            required
+            disabled={loading}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Search End Time *</label>
+          <input
+            type="datetime-local"
+            className="input"
+            value={formData.searchEnd}
+            onChange={(e) => setFormData({ ...formData, searchEnd: e.target.value })}
+            required
+            disabled={loading}
+          />
+        </div>
+      </div>
+
+      <button
+        type="submit"
+        className="btn btn-primary w-full"
+        disabled={loading}
+      >
+        {loading ? 'Searching...' : '🔍 Find Available Slots'}
+      </button>
+    </form>
+  );
+}
+
+function BatchVerifyForm({ rooms, participants, meetings, onMeetingsChange, onVerify, loading }: {
+  rooms: Room[];
+  participants: Participant[];
+  meetings: CreateMeetingRequest[];
+  onMeetingsChange: (meetings: CreateMeetingRequest[]) => void;
+  onVerify: () => void;
+  loading: boolean;
+}) {
+  const addMeeting = () => {
+    onMeetingsChange([
+      ...meetings,
+      {
+        title: '',
+        description: '',
+        startTime: '',
+        endTime: '',
+        roomId: 0,
+        participantIds: [],
+      },
+    ]);
+  };
+
+  const updateMeeting = (index: number, field: keyof CreateMeetingRequest, value: any) => {
+    const updated = [...meetings];
+    updated[index] = { ...updated[index], [field]: value };
+    onMeetingsChange(updated);
+  };
+
+  const removeMeeting = (index: number) => {
+    onMeetingsChange(meetings.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-[var(--muted-foreground)]">
+          Add multiple meetings to verify they can all be scheduled without conflicts
+        </p>
+        <button
+          type="button"
+          onClick={addMeeting}
+          className="btn btn-secondary text-sm"
+          disabled={loading}
+        >
+          + Add Meeting
+        </button>
+      </div>
+
+      {meetings.length === 0 ? (
+        <div className="text-center py-8 text-[var(--muted-foreground)]">
+          No meetings added. Click "Add Meeting" to start.
+        </div>
+      ) : (
+        <div className="space-y-4 max-h-96 overflow-y-auto">
+          {meetings.map((meeting, index) => (
+            <div key={index} className="p-4 bg-[var(--secondary)] rounded-lg border border-[var(--border)]">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-semibold">Meeting {index + 1}</h4>
+                <button
+                  type="button"
+                  onClick={() => removeMeeting(index)}
+                  className="btn btn-danger text-xs py-1 px-2"
+                  disabled={loading}
+                >
+                  Remove
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium mb-1">Title *</label>
+                  <input
+                    type="text"
+                    className="input text-sm"
+                    value={meeting.title}
+                    onChange={(e) => updateMeeting(index, 'title', e.target.value)}
+                    placeholder="Meeting title"
+                    required
+                    disabled={loading}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1">Room *</label>
+                  <select
+                    className="input select text-sm"
+                    value={meeting.roomId}
+                    onChange={(e) => updateMeeting(index, 'roomId', Number(e.target.value))}
+                    required
+                    disabled={loading}
+                  >
+                    <option value={0}>Select room...</option>
+                    {rooms.map((room) => (
+                      <option key={room.id} value={room.id}>
+                        {room.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1">Start Time *</label>
+                  <input
+                    type="datetime-local"
+                    className="input text-sm"
+                    value={meeting.startTime}
+                    onChange={(e) => updateMeeting(index, 'startTime', e.target.value)}
+                    required
+                    disabled={loading}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1">End Time *</label>
+                  <input
+                    type="datetime-local"
+                    className="input text-sm"
+                    value={meeting.endTime}
+                    onChange={(e) => updateMeeting(index, 'endTime', e.target.value)}
+                    required
+                    disabled={loading}
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-medium mb-1">Participants *</label>
+                  <div className="grid grid-cols-3 gap-2 max-h-32 overflow-y-auto p-2 bg-[var(--muted)] rounded">
+                    {participants.map((p) => (
+                      <label key={p.id} className="flex items-center gap-2 cursor-pointer text-xs">
+                        <input
+                          type="checkbox"
+                          checked={meeting.participantIds.includes(p.id)}
+                          onChange={(e) => {
+                            const currentIds = meeting.participantIds || [];
+                            const newIds = e.target.checked
+                              ? [...currentIds, p.id]
+                              : currentIds.filter(id => id !== p.id);
+                            updateMeeting(index, 'participantIds', newIds);
+                          }}
+                          className="rounded"
+                          disabled={loading}
+                        />
+                        <span>{p.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onVerify}
+        className="btn btn-primary w-full"
+        disabled={loading || meetings.length === 0}
+      >
+        {loading ? 'Verifying...' : `🔍 Verify ${meetings.length} Meeting${meetings.length !== 1 ? 's' : ''}`}
+      </button>
     </div>
   );
 }

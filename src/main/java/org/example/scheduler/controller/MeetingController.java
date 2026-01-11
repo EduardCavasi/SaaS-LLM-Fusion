@@ -2,6 +2,9 @@ package org.example.scheduler.controller;
 
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.example.scheduler.dto.AvailableSlotsRequestDTO;
+import org.example.scheduler.dto.AvailableSlotsResponseDTO;
+import org.example.scheduler.dto.BatchVerifyRequestDTO;
 import org.example.scheduler.dto.MeetingDTO;
 import org.example.scheduler.dto.SchedulingResultDTO;
 import org.example.scheduler.model.MeetingStatus;
@@ -197,6 +200,20 @@ public class MeetingController {
         Map<String, Boolean> status = new java.util.HashMap<>();
         status.put("enabled", meetingService.isZ3SolverEnabled());
         return ResponseEntity.ok(status);
+    }
+
+    @PostMapping("/available-slots")
+    public ResponseEntity<AvailableSlotsResponseDTO> findAvailableSlots(
+            @Valid @RequestBody AvailableSlotsRequestDTO request) {
+        AvailableSlotsResponseDTO response = meetingService.findAvailableSlots(request);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/batch-verify")
+    public ResponseEntity<SchedulingResultDTO> verifyBatchScheduling(
+            @Valid @RequestBody List<BatchVerifyRequestDTO> meetings) {
+        SchedulingResultDTO result = meetingService.verifyBatchScheduling(meetings);
+        return ResponseEntity.ok(result);
     }
 }
 

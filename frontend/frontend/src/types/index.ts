@@ -75,3 +75,19 @@ export interface VerificationStats {
   warningViolations: number;
 }
 
+export interface AvailableSlotsRequest {
+  roomId: number;
+  durationMinutes: number;
+  searchStart: string;
+  searchEnd: string;
+}
+
+export interface AvailableSlotsResponse {
+  roomId: number;
+  durationMinutes: number;
+  searchStart: string;
+  searchEnd: string;
+  availableSlots: string[];
+  totalSlots: number;
+}
+

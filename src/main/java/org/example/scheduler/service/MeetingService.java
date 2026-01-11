@@ -2,6 +2,9 @@ package org.example.scheduler.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.scheduler.dto.AvailableSlotsRequestDTO;
+import org.example.scheduler.dto.AvailableSlotsResponseDTO;
+import org.example.scheduler.dto.BatchVerifyRequestDTO;
 import org.example.scheduler.dto.MeetingDTO;
 import org.example.scheduler.dto.ParticipantDTO;
 import org.example.scheduler.dto.SchedulingResultDTO;
@@ -18,7 +21,9 @@ import org.example.scheduler.verification.z3.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -391,6 +396,78 @@ public class MeetingService {
 
     public void setZ3SolverEnabled(boolean enabled) {
         constraintSolver.setEnabled(enabled);
+    }
+
+    public AvailableSlotsResponseDTO findAvailableSlots(AvailableSlotsRequestDTO request) {
+        if (!constraintSolver.isEnabled()) {
+            throw new IllegalStateException("Z3 Solver is disabled");
+        }
+
+        List<ExistingMeeting> existingMeetings = getExistingMeetingsForConstraints();
+        
+        long searchStartEpoch = request.getSearchStart().atZone(ZoneId.systemDefault()).toEpochSecond();
+        long searchEndEpoch = request.getSearchEnd().atZone(ZoneId.systemDefault()).toEpochSecond();
+        
+        List<Long> availableSlotEpochs = constraintSolver.findAvailableSlots(
+            request.getRoomId(),
+            request.getDurationMinutes(),
+            searchStartEpoch,
+            searchEndEpoch,
+            existingMeetings
+        );
+        
+        List<LocalDateTime> availableSlots = availableSlotEpochs.stream()
+            .map(epoch -> LocalDateTime.ofInstant(Instant.ofEpochSecond(epoch), ZoneId.systemDefault()))
+            .collect(Collectors.toList());
+        
+        return AvailableSlotsResponseDTO.builder()
+            .roomId(request.getRoomId())
+            .durationMinutes(request.getDurationMinutes())
+            .searchStart(request.getSearchStart())
+            .searchEnd(request.getSearchEnd())
+            .availableSlots(availableSlots)
+            .totalSlots(availableSlots.size())
+            .build();
+    }
+
+    public SchedulingResultDTO verifyBatchScheduling(List<BatchVerifyRequestDTO> meetings) {
+        if (!constraintSolver.isEnabled()) {
+            throw new IllegalStateException("Z3 Solver is disabled");
+        }
+
+        List<ExistingMeeting> existingMeetings = getExistingMeetingsForConstraints();
+        
+        List<SchedulingConstraint> constraints = new ArrayList<>();
+        
+        for (BatchVerifyRequestDTO meetingDTO : meetings) {
+            Room room = roomService.getRoomEntityById(meetingDTO.getRoomId());
+            
+            SchedulingConstraint constraint = new SchedulingConstraint(
+                null,
+                room.getId(),
+                room.getCapacity(),
+                meetingDTO.getStartTime(),
+                meetingDTO.getEndTime(),
+                meetingDTO.getParticipantIds()
+            );
+            constraints.add(constraint);
+        }
+        
+        ConstraintResult result = constraintSolver.verifyBatchScheduling(constraints, existingMeetings);
+        
+        if (result.satisfiable()) {
+            return SchedulingResultDTO.success(
+                null,
+                String.format("Batch verification successful: %d meetings can be scheduled", meetings.size()),
+                result.solvingTimeMs()
+            );
+        } else {
+            return SchedulingResultDTO.failure(
+                result.violations(),
+                "Batch scheduling constraints cannot be satisfied",
+                result.solvingTimeMs()
+            );
+        }
     }
 
     /**
