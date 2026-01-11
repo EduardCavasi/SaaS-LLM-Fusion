@@ -9,6 +9,8 @@ import {
   PropertyViolation,
   VerificationStats,
   MeetingStatus,
+  AvailableSlotsRequest,
+  AvailableSlotsResponse,
 } from '@/types';
 
 const API_BASE = 'http://localhost:8081/api';
@@ -159,6 +161,35 @@ export const meetingApi = {
     fetchApi<Meeting>(`/meetings/${id}/reject`, { method: 'POST' }),
   cancel: (id: number) =>
     fetchApi<Meeting>(`/meetings/${id}/cancel`, { method: 'POST' }),
+  findAvailableSlots: (request: AvailableSlotsRequest) =>
+    fetchApi<AvailableSlotsResponse>('/meetings/available-slots', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }),
+  verifyBatchScheduling: async (meetings: CreateMeetingRequest[]): Promise<SchedulingResult> => {
+    const response = await fetch(`${API_BASE}/meetings/batch-verify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(meetings),
+    });
+
+    const data = await response.json();
+    
+    if (response.ok || response.status === 409) {
+      return data as SchedulingResult;
+    }
+    
+    return {
+      success: false,
+      constraintViolations: [data.message || 'Failed to verify batch scheduling'],
+      runtimeWarnings: [],
+      solverStatus: 'ERROR',
+      explanation: data.message || 'An error occurred while processing the request',
+      solvingTimeMs: 0,
+    };
+  },
 };
 
 // Verification API
